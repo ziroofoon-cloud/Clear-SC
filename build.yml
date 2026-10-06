@@ -1,0 +1,27 @@
+name: build
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch: {}
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unzip project
+        run: unzip -q ClearOverlay.zip
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+        working-directory: ClearOverlay
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClearOverlay-apk
+          path: ClearOverlay/app/build/outputs/apk/debug/*.apk
