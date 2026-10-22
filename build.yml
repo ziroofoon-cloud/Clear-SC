@@ -1,0 +1,65 @@
+name: build
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unzip project
+        run: unzip -q ClearOverlay.zip
+
+      # The streaming client's big native parts are not inside the zip: they come from the same Artemis release the
+      # client code was taken from (tag v20.2.6): moonlight-common-c (a git submodule) and the prebuilt Opus / OpenSSL.
+      - name: Fetch the streaming client's native sources
+        run: |
+          set -e
+          git clone --depth 1 --branch v20.2.6 --recurse-submodules --shallow-submodules \
+            https://github.com/ClassicOldSong/moonlight-android /tmp/artemis
+          S=/tmp/artemis/app/src/main/jni/moonlight-core
+          J=ClearOverlay/moonlight/src/main/jni/moonlight-core
+          test -f "$S/moonlight-common-c/src/Connection.c"
+          test -f "$S/moonlight-common-c/enet/host.c"
+          test -f "$S/libopus/arm64-v8a/libopus.a"
+          cp -r "$S/moonlight-common-c" "$J/moonlight-common-c"
+          cp -r "$S/libopus" "$J/libopus"
+          cp -r "$S/openssl" "$J/openssl"
+          # the phone is arm64: no need to keep the other ABIs
+          for d in libopus openssl; do for abi in armeabi-v7a x86 x86_64; do rm -rf "$J/$d/$abi"; done; done
+          find "$J/moonlight-common-c" -name .git -prune -exec rm -rf {} +
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # The runner already ships an Android SDK and NDK; accept licenses, make sure platform 35 / build-tools 34.0.0
+      # exist, and tell Gradle which NDK is installed (the streaming client has native code).
+      - name: Prepare Android SDK
+        run: |
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKM="$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager | head -n 1)"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-35" "build-tools;34.0.0" > /dev/null || true
+          NDKV="$(basename "${ANDROID_NDK_LATEST_HOME:-}")"
+          echo "NDK version on the runner: ${NDKV:-none (Gradle will download one)}"
+          if [ -n "$NDKV" ] && [ -d "$SDK/ndk/$NDKV" ]; then echo "NDK_ARG=-PndkVersion=$NDKV" >> "$GITHUB_ENV"; fi
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon --stacktrace $NDK_ARG
+        working-directory: ClearOverlay
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClearOverlay-apk
+          path: ClearOverlay/app/build/outputs/apk/debug/*.apk
